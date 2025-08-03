@@ -81,7 +81,7 @@ app.get('/search', authenticateApiKey, async (req, res) => {
           GREATEST(
             similarity(c.name, $1),
             similarity(c.ascii_name, $1),
-            COALESCE(MAX(similarity(alt.name, $1)), 0)
+            COALESCE(MAX(similarity(alt.alternate_name, $1)), 0)
           ) as score
         FROM cities c
         JOIN countries co ON c.country_code = co.country_code
@@ -91,8 +91,8 @@ app.get('/search', authenticateApiKey, async (req, res) => {
           c.ascii_name ILIKE $2 OR
           c.name % $1 OR
           c.ascii_name % $1 OR
-          alt.name ILIKE $2 OR
-          alt.name % $1
+          alt.alternate_name ILIKE $2 OR
+          alt.alternate_name % $1
         )
         GROUP BY c.geonameid, c.name, c.ascii_name, c.country_code, 
                  co.name, c.admin1_name, c.latitude, c.longitude, 
