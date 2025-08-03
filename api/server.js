@@ -97,8 +97,8 @@ app.get('/search', authenticateApiKey, async (req, res) => {
               alt.isolanguage, 
               alt.alternate_name
             ) FILTER (WHERE alt.isolanguage IS NOT NULL AND alt.alternate_name IS NOT NULL),
-            '{}'::jsonb
-          ) as name_translations_agg
+            '{}'::json
+          )::jsonb as name_translations_agg
         FROM cities c
         JOIN countries co ON c.country_code = co.country_code
         LEFT JOIN alternate_names alt ON c.geonameid = alt.geonameid
