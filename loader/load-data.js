@@ -591,12 +591,17 @@ async function loadAlternateNames() {
   return new Promise((resolve, reject) => {
     const readline = require('readline');
     
+    const fileStream = fs.createReadStream(txtFile);
     const rl = readline.createInterface({
-      input: fs.createReadStream(txtFile),
-      crlfDelay: Infinity // Handle Windows line endings
+      input: fileStream,
+      crlfDelay: Infinity
     });
     
-    rl.on('line', async (line) => {
+    let isProcessing = false;
+    let lineQueue = [];
+    
+    // Process lines synchronously with proper backpressure
+    const processLine = (line) => {
       processed++;
       
       // Parse TSV line manually to avoid CSV parser memory overhead
@@ -623,13 +628,6 @@ async function loadAlternateNames() {
         
         if (shouldInclude) {
           batch.push(row);
-          
-          // Process batch when it reaches the batch size
-          if (batch.length >= BATCH_SIZE) {
-            const batchCount = await processBatch(batch);
-            count += batchCount;
-            batch = []; // Clear batch array
-          }
         }
       }
       
@@ -640,9 +638,51 @@ async function loadAlternateNames() {
           global.gc();
         }
       }
+    };
+    
+    const processQueue = async () => {
+      if (isProcessing) return;
+      isProcessing = true;
+      
+      // Process all queued lines
+      while (lineQueue.length > 0) {
+        const line = lineQueue.shift();
+        processLine(line);
+        
+        // Process batch when it reaches the batch size
+        if (batch.length >= BATCH_SIZE) {
+          rl.pause(); // Pause reading while processing
+          const batchCount = await processBatch(batch);
+          count += batchCount;
+          batch = []; // Clear batch array
+          rl.resume(); // Resume reading
+        }
+      }
+      
+      isProcessing = false;
+    };
+    
+    rl.on('line', (line) => {
+      lineQueue.push(line);
+      
+      // Pause if queue gets too big
+      if (lineQueue.length > 1000) {
+        rl.pause();
+        processQueue().then(() => {
+          if (lineQueue.length < 500) {
+            rl.resume();
+          }
+        });
+      } else {
+        // Process queue without pausing for small queues
+        setImmediate(processQueue);
+      }
     });
     
     rl.on('close', async () => {
+      // Process any remaining queued lines
+      await processQueue();
+      
       // Process remaining items in batch
       if (batch.length > 0) {
         const batchCount = await processBatch(batch);
