@@ -509,6 +509,12 @@ async function loadAlternateNames() {
     return;
   }
   
+  // Get all valid geonameids from our cities table
+  console.log('📋 Getting list of valid city geonameids...');
+  const validGeonameids = await pool.query('SELECT geonameid FROM cities');
+  const validIds = new Set(validGeonameids.rows.map(row => row.geonameid.toString()));
+  console.log(`✅ Found ${validIds.size} cities to match alternate names against`);
+  
   const dataDir = '/app/data';
   const zipFile = path.join(dataDir, 'alternateNamesV2.zip');
   const txtFile = path.join(dataDir, 'alternateNamesV2.txt');
@@ -532,37 +538,29 @@ async function loadAlternateNames() {
   const BATCH_SIZE = 100; // Much smaller batches
   let stream = null;
   
-  // Process single row immediately
+  // Process single row immediately (we already know it's valid)
   const processRow = async (row) => {
     try {
-      // Check if the geonameid exists in our cities table
-      const cityExists = await pool.query(
-        'SELECT 1 FROM cities WHERE geonameid = $1', 
-        [parseInt(row.geonameid)]
-      );
+      await pool.query(`
+        INSERT INTO alternate_names (
+          alternatenameid, geonameid, isolanguage, alternate_name,
+          is_preferred_name, is_short_name, is_colloquial, is_historic
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (alternatenameid) DO NOTHING
+      `, [
+        parseInt(row.alternatenameid), parseInt(row.geonameid),
+        row.isolanguage, row.alternate_name,
+        row.is_preferred_name === '1',
+        row.is_short_name === '1',
+        row.is_colloquial === '1',
+        row.is_historic === '1'
+      ]);
       
-      if (cityExists.rows.length > 0) {
-        await pool.query(`
-          INSERT INTO alternate_names (
-            alternatenameid, geonameid, isolanguage, alternate_name,
-            is_preferred_name, is_short_name, is_colloquial, is_historic
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-          ON CONFLICT (alternatenameid) DO NOTHING
-        `, [
-          parseInt(row.alternatenameid), parseInt(row.geonameid),
-          row.isolanguage, row.alternate_name,
-          row.is_preferred_name === '1',
-          row.is_short_name === '1',
-          row.is_colloquial === '1',
-          row.is_historic === '1'
-        ]);
-        
-        return 1;
-      }
+      return 1;
     } catch (error) {
       // Skip invalid rows
+      return 0;
     }
-    return 0;
   };
   
   // Process batch with backpressure control
@@ -619,8 +617,11 @@ async function loadAlternateNames() {
         is_historic: columns[7]
       };
       
-      // Only process rows with valid language codes and names
-      if (row.isolanguage && row.isolanguage.length <= 7 && row.alternate_name && row.alternate_name.length <= 400) {
+      // Only process rows that match our cities AND have valid language codes
+      if (validIds.has(row.geonameid) && 
+          row.isolanguage && row.isolanguage.length <= 7 && 
+          row.alternate_name && row.alternate_name.length <= 400) {
+        
         // Filter by supported languages if specified
         const shouldInclude = !SUPPORTED_LANGUAGES || 
           SUPPORTED_LANGUAGES.includes(row.isolanguage.toLowerCase()) ||
@@ -661,9 +662,26 @@ async function loadAlternateNames() {
               console.log(`🔍 Debug: We have ${cityCount.rows[0].count} cities in database`);
               console.log(`🔍 Sample cities:`, sampleCities.rows);
               
-              // Show what geonameids we're looking for
-              console.log(`🔍 Sample alternate name geonameids from this batch:`, 
-                batch.slice(0, 5).map(r => `${r.geonameid} (${r.alternate_name})`));
+              // Test if ANY alternate names match our cities
+              const testQuery = await pool.query(`
+                SELECT COUNT(*) as matches FROM alternate_names alt 
+                JOIN cities c ON alt.geonameid = c.geonameid 
+                LIMIT 1
+              `);
+              console.log(`🔍 Existing alternate names that match cities:`, testQuery.rows[0].matches);
+              
+              // Test if we can find alternate names for our specific cities
+              const cityGeonameids = sampleCities.rows.map(c => c.geonameid);
+              const matchTest = await pool.query(`
+                SELECT geonameid, COUNT(*) as alt_count 
+                FROM (VALUES ${cityGeonameids.map(id => `(${id})`).join(',')}) as city_ids(geonameid)
+                WHERE EXISTS (
+                  SELECT 1 FROM alternate_names WHERE geonameid = city_ids.geonameid
+                )
+                GROUP BY geonameid
+              `);
+              console.log(`🔍 Our sample cities with existing alternate names:`, matchTest.rows);
+              
             } catch (e) {
               console.log('🔍 Debug error:', e.message);
             }
