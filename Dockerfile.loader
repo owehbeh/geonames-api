@@ -12,11 +12,14 @@ RUN npm install --only=production
 
 COPY loader/ ./
 
-# Create non-root user
+# Create non-root user and data directory
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S loader -u 1001 -G nodejs
 
-RUN chown -R loader:nodejs /app
+# Create data directory and set permissions
+RUN mkdir -p /app/data && \
+    chown -R loader:nodejs /app
+
 USER loader
 
 CMD ["node", "load-data.js"]
