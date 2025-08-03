@@ -82,11 +82,8 @@ async function createTables() {
     CREATE INDEX IF NOT EXISTS idx_alt_names_name ON alternate_names USING gin(alternate_name gin_trgm_ops);
     CREATE INDEX IF NOT EXISTS idx_countries_name ON countries USING gin(name gin_trgm_ops);
     
-    -- Foreign key constraints
-    ALTER TABLE cities ADD CONSTRAINT fk_cities_country 
-      FOREIGN KEY (country_code) REFERENCES countries(country_code);
-    ALTER TABLE alternate_names ADD CONSTRAINT fk_alt_names_geonameid 
-      FOREIGN KEY (geonameid) REFERENCES cities(geonameid);
+    -- Foreign key constraints (added after data loading)
+    -- These will be added later to avoid constraint issues during loading
   `;
   
   await pool.query(createTablesSQL);
@@ -221,14 +218,14 @@ async function loadCitiesData() {
           await pool.query(`
             INSERT INTO cities (
               geonameid, name, ascii_name, alternatenames, latitude, longitude,
-              feature_class, feature_code, country_code, admin1_code, 
+              feature_class, feature_code, country_code, admin1_code, admin1_name,
               population, elevation, timezone, modification_date
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (geonameid) DO NOTHING
           `, [
             parseInt(row.geonameid), row.name, row.asciiname, row.alternatenames,
             parseFloat(row.latitude), parseFloat(row.longitude),
-            row.feature_class, row.feature_code, row.country_code, row.admin1_code,
+            row.feature_class, row.feature_code, row.country_code, row.admin1_code, null,
             row.population ? parseInt(row.population) : null,
             row.elevation ? parseInt(row.elevation) : null,
             row.timezone, row.modification_date || null
