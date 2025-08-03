@@ -539,8 +539,7 @@ async function loadAlternateNames() {
   let count = 0;
   let processed = 0;
   let batch = [];
-  const BATCH_SIZE = 100; // Much smaller batches
-  let stream = null;
+  const BATCH_SIZE = 100;
   
   // Process single row immediately (we already know it's valid)
   const processRow = async (row) => {
@@ -567,52 +566,63 @@ async function loadAlternateNames() {
     }
   };
   
-  // Process batch with backpressure control
+  // Process batch efficiently with bulk insert
   const processBatch = async (batchData) => {
     if (batchData.length === 0) return 0;
     
-    // Pause the stream while processing
-    if (stream) stream.pause();
-    
-    let batchCount = 0;
-    for (const row of batchData) {
-      batchCount += await processRow(row);
+    try {
+      // Build bulk insert query
+      const values = batchData.map((_, index) => {
+        const base = index * 8;
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`;
+      }).join(', ');
+      
+      const params = batchData.flatMap(row => [
+        parseInt(row.alternatenameid),
+        parseInt(row.geonameid),
+        row.isolanguage,
+        row.alternate_name,
+        row.is_preferred_name === '1',
+        row.is_short_name === '1',
+        row.is_colloquial === '1',
+        row.is_historic === '1'
+      ]);
+      
+      await pool.query(`
+        INSERT INTO alternate_names (
+          alternatenameid, geonameid, isolanguage, alternate_name,
+          is_preferred_name, is_short_name, is_colloquial, is_historic
+        ) VALUES ${values}
+        ON CONFLICT (alternatenameid) DO NOTHING
+      `, params);
+      
+      if (global.gc) global.gc();
+      
+      return batchData.length;
+    } catch (error) {
+      console.error('Batch insert error:', error.message);
+      return 0;
     }
-    
-    // Force garbage collection
-    if (global.gc) {
-      global.gc();
-    }
-    
-    // Resume the stream
-    if (stream) stream.resume();
-    
-    return batchCount;
   };
   
   return new Promise((resolve, reject) => {
-    console.log(`🔄 Setting up file stream for ${txtFile}...`);
     const readline = require('readline');
     
     const fileStream = fs.createReadStream(txtFile);
-    console.log(`✅ File stream created`);
-    
     const rl = readline.createInterface({
       input: fileStream,
       crlfDelay: Infinity
     });
-    console.log(`✅ Readline interface created`);
     
-    let isProcessing = false;
     let lineQueue = [];
+    let isProcessing = false;
     
-    // Process lines synchronously with proper backpressure
-    const processLine = (line) => {
+    // Synchronous line parser
+    const parseLine = (line) => {
       processed++;
       
-      // Parse TSV line manually to avoid CSV parser memory overhead
       const columns = line.split('\t');
-      if (columns.length < 8) return; // Skip invalid lines
+      if (columns.length < 8) return null;
       
       const row = {
         alternatenameid: columns[0],
@@ -625,115 +635,71 @@ async function loadAlternateNames() {
         is_historic: columns[7]
       };
       
-      // Only process rows that match our cities AND have valid language codes
+      // Only return rows that match our cities
       if (validIds.has(row.geonameid) && 
           row.isolanguage && row.isolanguage.length <= 7 && 
           row.alternate_name && row.alternate_name.length <= 400) {
         
-        // Filter by supported languages if specified
         const shouldInclude = !SUPPORTED_LANGUAGES || 
           SUPPORTED_LANGUAGES.includes(row.isolanguage.toLowerCase()) ||
           SUPPORTED_LANGUAGES.includes('all');
         
-        if (shouldInclude) {
-          batch.push(row);
-        }
+        return shouldInclude ? row : null;
       }
       
-      if (processed % 50000 === 0) {
-        console.log(`📥 Processed ${processed} alternate names, imported ${count}...`);
-        // Force garbage collection more frequently
-        if (global.gc) {
-          global.gc();
-        }
-      }
+      return null;
     };
     
+    // Process queue with proper async handling
     const processQueue = async () => {
-      if (isProcessing) return;
+      if (isProcessing || lineQueue.length === 0) return;
+      
       isProcessing = true;
+      rl.pause();
       
       // Process all queued lines
       while (lineQueue.length > 0) {
         const line = lineQueue.shift();
-        processLine(line);
+        const row = parseLine(line);
         
-        // Process batch when it reaches the batch size
+        if (row) {
+          batch.push(row);
+        }
+        
+        // Process batch when full
         if (batch.length >= BATCH_SIZE) {
-          rl.pause(); // Pause reading while processing
-          
-          // Debug: Check database state on first batch
-          if (count === 0 && processed > 50000) {
-            try {
-              const cityCount = await pool.query('SELECT COUNT(*) FROM cities');
-              const sampleCities = await pool.query('SELECT geonameid, name FROM cities LIMIT 5');
-              console.log(`🔍 Debug: We have ${cityCount.rows[0].count} cities in database`);
-              console.log(`🔍 Sample cities:`, sampleCities.rows);
-              
-              // Test if ANY alternate names match our cities
-              const testQuery = await pool.query(`
-                SELECT COUNT(*) as matches FROM alternate_names alt 
-                JOIN cities c ON alt.geonameid = c.geonameid 
-                LIMIT 1
-              `);
-              console.log(`🔍 Existing alternate names that match cities:`, testQuery.rows[0].matches);
-              
-              // Test if we can find alternate names for our specific cities
-              const cityGeonameids = sampleCities.rows.map(c => c.geonameid);
-              const matchTest = await pool.query(`
-                SELECT geonameid, COUNT(*) as alt_count 
-                FROM (VALUES ${cityGeonameids.map(id => `(${id})`).join(',')}) as city_ids(geonameid)
-                WHERE EXISTS (
-                  SELECT 1 FROM alternate_names WHERE geonameid = city_ids.geonameid
-                )
-                GROUP BY geonameid
-              `);
-              console.log(`🔍 Our sample cities with existing alternate names:`, matchTest.rows);
-              
-            } catch (e) {
-              console.log('🔍 Debug error:', e.message);
-            }
-          }
-          
           const batchCount = await processBatch(batch);
           count += batchCount;
-          batch = []; // Clear batch array
-          rl.resume(); // Resume reading
+          batch = [];
+        }
+        
+        if (processed % 50000 === 0) {
+          console.log(`📥 Processed ${processed} alternate names, imported ${count}...`);
+          if (global.gc) global.gc();
         }
       }
       
       isProcessing = false;
+      rl.resume();
     };
     
-    let firstLineLogged = false;
-    
     rl.on('line', (line) => {
-      if (!firstLineLogged) {
-        console.log(`✅ First line received, starting processing...`);
-        firstLineLogged = true;
-      }
-      
       lineQueue.push(line);
       
-      // Pause if queue gets too big
-      if (lineQueue.length > 1000) {
+      // Control queue size to prevent memory buildup
+      if (lineQueue.length >= 1000) {
         rl.pause();
-        processQueue().then(() => {
-          if (lineQueue.length < 500) {
-            rl.resume();
-          }
-        });
-      } else {
-        // Process queue without pausing for small queues
+        processQueue();
+      } else if (lineQueue.length >= 10) {
         setImmediate(processQueue);
       }
     });
     
     rl.on('close', async () => {
-      // Process any remaining queued lines
+      // Process any remaining lines
       await processQueue();
       
-      // Process remaining items in batch
+      // Process final batch
       if (batch.length > 0) {
         const batchCount = await processBatch(batch);
         count += batchCount;
