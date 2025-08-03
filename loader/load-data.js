@@ -15,6 +15,9 @@ const pool = new Pool({
 });
 
 const DATASET = process.env.GEONAMES_DATASET || 'cities15000';
+const SUPPORTED_LANGUAGES = process.env.SUPPORTED_LANGUAGES ? 
+  process.env.SUPPORTED_LANGUAGES.split(',').map(lang => lang.trim().toLowerCase()) : 
+  null; // null means load all languages
 
 async function createTables() {
   console.log('Creating database tables...');
@@ -516,9 +519,60 @@ async function loadAlternateNames() {
     await extractZip(zipFile, dataDir);
   }
   
-  console.log('📊 Importing alternate names...');
+  console.log('📊 Importing alternate names in batches...');
+  if (SUPPORTED_LANGUAGES) {
+    console.log(`🌍 Filtering for languages: ${SUPPORTED_LANGUAGES.join(', ')}`);
+  } else {
+    console.log('🌍 Loading all languages');
+  }
   let count = 0;
   let processed = 0;
+  let batch = [];
+  const BATCH_SIZE = 1000;
+  
+  // Process batch function
+  const processBatch = async (batchData) => {
+    if (batchData.length === 0) return 0;
+    
+    let batchCount = 0;
+    for (const row of batchData) {
+      try {
+        // Check if the geonameid exists in our cities table
+        const cityExists = await pool.query(
+          'SELECT 1 FROM cities WHERE geonameid = $1', 
+          [parseInt(row.geonameid)]
+        );
+        
+        if (cityExists.rows.length > 0) {
+          await pool.query(`
+            INSERT INTO alternate_names (
+              alternatenameid, geonameid, isolanguage, alternate_name,
+              is_preferred_name, is_short_name, is_colloquial, is_historic
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (alternatenameid) DO NOTHING
+          `, [
+            parseInt(row.alternatenameid), parseInt(row.geonameid),
+            row.isolanguage, row.alternate_name,
+            row.is_preferred_name === '1',
+            row.is_short_name === '1',
+            row.is_colloquial === '1',
+            row.is_historic === '1'
+          ]);
+          
+          batchCount++;
+        }
+      } catch (error) {
+        // Skip invalid rows
+      }
+    }
+    
+    // Force garbage collection hint
+    if (global.gc) {
+      global.gc();
+    }
+    
+    return batchCount;
+  };
   
   return new Promise((resolve, reject) => {
     fs.createReadStream(txtFile)
@@ -533,33 +587,22 @@ async function loadAlternateNames() {
       .on('data', async (row) => {
         processed++;
         
-        if (row.isolanguage && row.isolanguage.length <= 7 && row.alternate_name) {
-          try {
-            const cityExists = await pool.query(
-              'SELECT 1 FROM cities WHERE geonameid = $1', 
-              [parseInt(row.geonameid)]
-            );
-            
-            if (cityExists.rows.length > 0) {
-              await pool.query(`
-                INSERT INTO alternate_names (
-                  alternatenameid, geonameid, isolanguage, alternate_name,
-                  is_preferred_name, is_short_name, is_colloquial, is_historic
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (alternatenameid) DO NOTHING
-              `, [
-                parseInt(row.alternatenameid), parseInt(row.geonameid),
-                row.isolanguage, row.alternate_name,
-                row.is_preferred_name === '1',
-                row.is_short_name === '1',
-                row.is_colloquial === '1',
-                row.is_historic === '1'
-              ]);
-              
-              count++;
-            }
-          } catch (error) {
-            // Skip invalid rows
+        // Only process rows with valid language codes and names
+        if (row.isolanguage && row.isolanguage.length <= 7 && row.alternate_name && row.alternate_name.length <= 400) {
+          // Filter by supported languages if specified
+          const shouldInclude = !SUPPORTED_LANGUAGES || 
+            SUPPORTED_LANGUAGES.includes(row.isolanguage.toLowerCase()) ||
+            SUPPORTED_LANGUAGES.includes('all');
+          
+          if (shouldInclude) {
+            batch.push(row);
+          }
+          
+          // Process batch when it reaches the batch size
+          if (batch.length >= BATCH_SIZE) {
+            const batchCount = await processBatch(batch);
+            count += batchCount;
+            batch = []; // Clear batch array
           }
         }
         
@@ -567,7 +610,13 @@ async function loadAlternateNames() {
           console.log(`📥 Processed ${processed} alternate names, imported ${count}...`);
         }
       })
-      .on('end', () => {
+      .on('end', async () => {
+        // Process remaining items in batch
+        if (batch.length > 0) {
+          const batchCount = await processBatch(batch);
+          count += batchCount;
+        }
+        
         console.log(`✅ Imported ${count} alternate names successfully`);
         resolve();
       })
