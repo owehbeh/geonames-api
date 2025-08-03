@@ -7,8 +7,8 @@ WORKDIR /app
 RUN apk add --no-cache curl unzip postgresql-client
 
 # Copy loader files
-COPY loader/package*.json ./
-RUN npm ci --only=production
+COPY loader/package.json ./
+RUN npm install --only=production
 
 COPY loader/ ./
 
