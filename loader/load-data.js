@@ -652,6 +652,23 @@ async function loadAlternateNames() {
         // Process batch when it reaches the batch size
         if (batch.length >= BATCH_SIZE) {
           rl.pause(); // Pause reading while processing
+          
+          // Debug: Check database state on first batch
+          if (count === 0 && processed > 50000) {
+            try {
+              const cityCount = await pool.query('SELECT COUNT(*) FROM cities');
+              const sampleCities = await pool.query('SELECT geonameid, name FROM cities LIMIT 5');
+              console.log(`🔍 Debug: We have ${cityCount.rows[0].count} cities in database`);
+              console.log(`🔍 Sample cities:`, sampleCities.rows);
+              
+              // Show what geonameids we're looking for
+              console.log(`🔍 Sample alternate name geonameids from this batch:`, 
+                batch.slice(0, 5).map(r => `${r.geonameid} (${r.alternate_name})`));
+            } catch (e) {
+              console.log('🔍 Debug error:', e.message);
+            }
+          }
+          
           const batchCount = await processBatch(batch);
           count += batchCount;
           batch = []; // Clear batch array
