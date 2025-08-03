@@ -519,10 +519,14 @@ async function loadAlternateNames() {
   const zipFile = path.join(dataDir, 'alternateNamesV2.zip');
   const txtFile = path.join(dataDir, 'alternateNamesV2.txt');
   
+  console.log(`🔍 Checking for file: ${txtFile}`);
   if (!fs.existsSync(txtFile)) {
+    console.log(`📥 File not found, downloading from GeoNames...`);
     const downloadUrl = 'http://download.geonames.org/export/dump/alternateNamesV2.zip';
     await downloadFile(downloadUrl, zipFile);
     await extractZip(zipFile, dataDir);
+  } else {
+    console.log(`✅ File exists, starting import...`);
   }
   
   console.log('📊 Importing alternate names with aggressive memory management...');
@@ -587,13 +591,17 @@ async function loadAlternateNames() {
   };
   
   return new Promise((resolve, reject) => {
+    console.log(`🔄 Setting up file stream for ${txtFile}...`);
     const readline = require('readline');
     
     const fileStream = fs.createReadStream(txtFile);
+    console.log(`✅ File stream created`);
+    
     const rl = readline.createInterface({
       input: fileStream,
       crlfDelay: Infinity
     });
+    console.log(`✅ Readline interface created`);
     
     let isProcessing = false;
     let lineQueue = [];
@@ -698,6 +706,10 @@ async function loadAlternateNames() {
     };
     
     rl.on('line', (line) => {
+      if (processed === 0) {
+        console.log(`✅ First line received, starting processing...`);
+      }
+      
       lineQueue.push(line);
       
       // Pause if queue gets too big
