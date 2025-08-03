@@ -19,9 +19,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # Remove this port mapping for production security
-    ports:
-      - "5432:5432"
+    # Port 5432 not exposed externally for security
 
   # Data loader - Downloads and imports GeoNames data (runs once)
   data-loader:
