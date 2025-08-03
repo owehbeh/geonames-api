@@ -77,12 +77,28 @@ app.get('/search', authenticateApiKey, async (req, res) => {
           c.alternatenames::text,
           co.spoken_languages,
           co.name_translations as country_translations,
-          -- Fuzzy matching score
-          GREATEST(
-            similarity(c.name, $1),
-            similarity(c.ascii_name, $1),
-            COALESCE(MAX(similarity(alt.alternate_name, $1)), 0)
-          ) as score
+          -- Improved scoring: prioritize exact matches, then ILIKE, then fuzzy
+          CASE
+            WHEN LOWER(c.name) = LOWER($1) THEN 100
+            WHEN LOWER(c.ascii_name) = LOWER($1) THEN 95
+            WHEN EXISTS(SELECT 1 FROM alternate_names alt WHERE alt.geonameid = c.geonameid AND LOWER(alt.alternate_name) = LOWER($1)) THEN 90
+            WHEN c.name ILIKE $2 THEN 80
+            WHEN c.ascii_name ILIKE $2 THEN 75
+            WHEN EXISTS(SELECT 1 FROM alternate_names alt WHERE alt.geonameid = c.geonameid AND alt.alternate_name ILIKE $2) THEN 70
+            ELSE GREATEST(
+              similarity(c.name, $1),
+              similarity(c.ascii_name, $1),
+              COALESCE(MAX(similarity(alt.alternate_name, $1)), 0)
+            ) * 10
+          END as score,
+          -- Aggregate alternate names with language codes for translations
+          COALESCE(
+            json_object_agg(
+              alt.isolanguage, 
+              alt.alternate_name
+            ) FILTER (WHERE alt.isolanguage IS NOT NULL AND alt.alternate_name IS NOT NULL),
+            '{}'::json
+          ) as name_translations_agg
         FROM cities c
         JOIN countries co ON c.country_code = co.country_code
         LEFT JOIN alternate_names alt ON c.geonameid = alt.geonameid
@@ -162,8 +178,10 @@ app.get('/search', authenticateApiKey, async (req, res) => {
 
       if (row.type === 'city') {
         baseResult.admin_region = row.admin_region;
-        const translations = {};
-        if (row.alternatenames) {
+        // Use the aggregated translations from the query
+        const translations = row.name_translations_agg || {};
+        // Always include the primary name as English if not already present
+        if (!translations.en) {
           translations.en = row.name;
         }
         baseResult.name_translations = translations;
