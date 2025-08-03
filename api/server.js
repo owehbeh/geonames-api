@@ -74,7 +74,7 @@ app.get('/search', authenticateApiKey, async (req, res) => {
           c.admin1_name as admin_region,
           c.latitude,
           c.longitude,
-          c.alternatenames,
+          c.alternatenames::text,
           co.spoken_languages,
           co.name_translations as country_translations,
           -- Fuzzy matching score
@@ -111,7 +111,7 @@ app.get('/search', authenticateApiKey, async (req, res) => {
           NULL as admin_region,
           co.latitude,
           co.longitude,
-          co.name_translations as alternatenames,
+          co.name_translations::text as alternatenames,
           co.spoken_languages,
           co.name_translations as country_translations,
           -- Fuzzy matching score
