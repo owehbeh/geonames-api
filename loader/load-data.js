@@ -705,9 +705,12 @@ async function loadAlternateNames() {
       isProcessing = false;
     };
     
+    let firstLineLogged = false;
+    
     rl.on('line', (line) => {
-      if (processed === 0) {
+      if (!firstLineLogged) {
         console.log(`✅ First line received, starting processing...`);
+        firstLineLogged = true;
       }
       
       lineQueue.push(line);
