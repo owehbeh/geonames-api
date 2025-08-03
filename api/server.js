@@ -130,11 +130,19 @@ app.get('/search', authenticateApiKey, async (req, res) => {
           co.name_translations::text as alternatenames,
           co.spoken_languages,
           co.name_translations as country_translations,
-          -- Fuzzy matching score
-          GREATEST(
-            similarity(co.name, $1),
-            COALESCE(MAX(similarity(alt.name, $1)), 0)
-          ) as score
+          -- Improved scoring for countries too
+          CASE
+            WHEN LOWER(co.name) = LOWER($1) THEN 100
+            WHEN co.name ILIKE $2 THEN 80
+            WHEN EXISTS(SELECT 1 FROM country_alternate_names alt WHERE alt.country_code = co.country_code AND LOWER(alt.name) = LOWER($1)) THEN 90
+            WHEN EXISTS(SELECT 1 FROM country_alternate_names alt WHERE alt.country_code = co.country_code AND alt.name ILIKE $2) THEN 70
+            ELSE GREATEST(
+              similarity(co.name, $1),
+              COALESCE(MAX(similarity(alt.name, $1)), 0)
+            ) * 10
+          END as score,
+          -- Add matching column for countries (use name_translations as it already contains multilingual data)
+          co.name_translations as name_translations_agg
         FROM countries co
         LEFT JOIN country_alternate_names alt ON co.country_code = alt.country_code
         WHERE (
