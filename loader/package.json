@@ -1,0 +1,14 @@
+{
+  "name": "geonames-loader",
+  "version": "1.0.0",
+  "description": "GeoNames data loader",
+  "main": "load-data.js",
+  "dependencies": {
+    "pg": "^8.11.3",
+    "csv-parser": "^3.0.0",
+    "yauzl": "^2.10.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,78 @@
+# docker-compose.yml - Production Ready Lightweight GeoNames API
+version: '3.8'
+
+services:
+  # PostgreSQL database with PostGIS for geographic queries
+  postgres:
+    image: postgis/postgis:15-3.3
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=geonames
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Remove this port mapping for production security
+    ports:
+      - "5432:5432"
+
+  # Data loader - Downloads and imports GeoNames data (runs once)
+  data-loader:
+    build:
+      context: .
+      dockerfile: Dockerfile.loader
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=geonames
+      - DB_USER=postgres
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - GEONAMES_DATASET=cities15000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - geonames_data:/app/data
+    restart: "no"  # Run once only
+
+  # Main API server
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=geonames
+      - DB_USER=postgres
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - API_PORT=3000
+      - API_KEYS=${API_KEYS:-demo-key-12345}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      data-loader:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  postgres_data:
+    driver: local
+  geonames_data:
+    driver: local
